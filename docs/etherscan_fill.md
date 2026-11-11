@@ -1,0 +1,55 @@
+# Etherscan cache fill
+
+`ethcode-fill-etherscan` retrieves source, creation bytecode, and runtime
+bytecode from Etherscan for a list of contracts. Each outgoing endpoint
+response is stored in the normal Etherscan cache.
+
+## Command
+
+```console
+ethcode-fill-etherscan ADDRESSES [options]
+```
+
+`ADDRESSES` is a CSV file with `chain,address` columns:
+
+```csv
+chain,address
+1,0xdAC17F958D2ee523a2206206994597C13D831ec7
+11155111,0x2738d13E81e30bC615766A0410e7cF199FD59A83
+```
+
+The command reads the API key from `ETHERSCAN_API_KEY`. `--api-key VALUE` can
+provide it explicitly.
+
+Options:
+
+- `--cache-dir PATH` selects the Etherscan cache directory; the default is
+  `~/.cache/ethcode/etherscan`.
+- `--calls-per-second RATE` configures the shared request rate; the default is
+  `3`.
+- `--timeout SECONDS` configures the HTTP timeout; the default is `30`.
+- `--report PATH` writes the JSON report to a file instead of standard output.
+
+Processes sharing a cache directory must use the same `--calls-per-second`
+value. The cache-scoped request schedule coordinates their calls.
+
+## Behavior
+
+The command deduplicates and validates locations, requests every artifact kind,
+and reports `found`, `not_found`, or `failed` for each contract. Cached endpoint
+responses do not generate API calls. Rate-limit, quota, transport, and ambiguous
+API errors are reported and remain uncached; processing continues with the next
+contract. If some endpoint calls completed before another failed, their valid
+responses remain cached and are reused on the next run.
+
+## Python API
+
+```python
+from pathlib import Path
+
+from ethcode.tools.addresses import read_addresses
+from ethcode.tools.fill_etherscan_cache import fill_cache
+
+locations = read_addresses(Path("addresses.csv"))
+report = fill_cache(locations)
+```
