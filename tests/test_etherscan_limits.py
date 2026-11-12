@@ -49,3 +49,32 @@ def test_processes_must_use_same_rate_for_shared_cache(tmp_path):
     with pytest.raises(ProviderUnavailableError, match="differs"):
         with provider._request_slot():
             pass
+
+
+def test_schedule_spaces_request_starts_not_response_completion(tmp_path):
+    provider = EtherscanProvider(tmp_path, "key", calls_per_second=5)
+    clock = [100.0, 100.0, 107.0]
+    with patch("ethcode.providers.etherscan.time.time", side_effect=clock) as now:
+        with provider._request_slot():
+            pass
+
+    state = json.loads((tmp_path / ".request-schedule.json").read_text())
+    assert state == {"next_request": 100.2, "calls_per_second": 5.0}
+    assert now.call_count == 2
+
+
+def test_schedule_waits_until_the_next_allowed_start(tmp_path):
+    (tmp_path / ".request-schedule.json").write_text(json.dumps({
+        "next_request": 100.2,
+        "calls_per_second": 5.0,
+    }))
+    provider = EtherscanProvider(tmp_path, "key", calls_per_second=5)
+    with patch("ethcode.providers.etherscan.time.time",
+               side_effect=[100.0, 100.2]), patch(
+                   "ethcode.providers.etherscan.time.sleep") as sleep:
+        with provider._request_slot():
+            pass
+
+    sleep.assert_called_once_with(pytest.approx(0.2))
+    state = json.loads((tmp_path / ".request-schedule.json").read_text())
+    assert state == {"next_request": 100.4, "calls_per_second": 5.0}

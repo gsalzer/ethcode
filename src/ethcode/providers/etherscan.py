@@ -93,11 +93,12 @@ class EtherscanProvider(CachedHttpProvider):
                         delay = next_request - now
                         if delay > 0:
                             time.sleep(delay)
+                    request_started = time.time()
                     try:
                         yield
                     finally:
                         self._atomic_json(self._schedule_path, {
-                            "next_request": time.time() + self.request_interval,
+                            "next_request": request_started + self.request_interval,
                             "calls_per_second": self.calls_per_second,
                         })
             except ProviderUnavailableError:

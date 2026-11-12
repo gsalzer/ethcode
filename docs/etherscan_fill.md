@@ -34,7 +34,9 @@ Options:
   append new events with a distinct `run_id`.
 
 Processes sharing a cache directory must use the same `--calls-per-second`
-value. The cache-scoped request schedule coordinates their calls.
+value. The cache-scoped request schedule coordinates their request start times.
+Network latency counts toward the spacing: when a response takes longer than
+the configured interval, the next request may start immediately after it.
 
 ## Behavior
 
