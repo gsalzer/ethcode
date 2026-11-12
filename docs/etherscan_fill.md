@@ -29,6 +29,9 @@ Options:
   `3`.
 - `--timeout SECONDS` configures the HTTP timeout; the default is `30`.
 - `--report PATH` writes the JSON report to a file instead of standard output.
+- `--events PATH` appends one compact JSON event for every processed contract.
+  Each line is flushed immediately and survives interruption. Repeated runs
+  append new events with a distinct `run_id`.
 
 Processes sharing a cache directory must use the same `--calls-per-second`
 value. The cache-scoped request schedule coordinates their calls.
@@ -43,6 +46,14 @@ operational and rate-limit errors, but stops the current pass after a quota erro
 rerunning later resumes from the endpoint responses already cached. If some
 endpoint calls completed before another failed, their valid responses remain
 cached and are reused on the next run.
+For a long-running command, use unbuffered Python output for immediately visible
+progress. The append-only event stream durably records successful, absent, and
+failed observations even if the process is interrupted:
+
+```console
+python -u -m ethcode.tools.fill_etherscan_cache addresses.csv \
+  --events etherscan-events.jsonl --report etherscan-report.json
+```
 
 ## Python API
 

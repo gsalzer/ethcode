@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
 from typing import Iterable
+import uuid
 
 from ..cache import DEFAULT_CACHE_ROOT
 from ..errors import ArtifactError, ProviderError, ProviderQuotaError
@@ -15,11 +18,37 @@ from ..providers import EtherscanProvider
 from .addresses import read_addresses
 
 
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def _event_sink(path: Path | None, run_id: str, total: int):
+    if path is None:
+        yield lambda index, item: None
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", buffering=1) as output:
+        def emit(index, item):
+            event = {
+                "timestamp": _utcnow(), "run_id": run_id,
+                "index": index, "total": total, **item,
+            }
+            output.write(json.dumps(
+                event, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ) + "\n")
+            output.flush()
+        yield emit
+
+
 def fill_cache(addresses: Iterable[ContractLocation], *,
                cache_dir: Path = DEFAULT_CACHE_ROOT / "etherscan",
                api_key: str | None = None,
                calls_per_second: float = 3.0,
-               timeout: float = 30) -> dict:
+               timeout: float = 30,
+               event_log: Path | None = None) -> dict:
     """Retrieve every artifact kind for each location and return a report."""
     provider = EtherscanProvider(
         cache_dir,
@@ -29,6 +58,7 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
     )
     locations = sorted(set(addresses), key=lambda item: (item.chain_id, item.address))
     report = {
+        "run_id": uuid.uuid4().hex,
         "requested": len(locations),
         "found": 0,
         "not_found": 0,
@@ -36,42 +66,45 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
         "complete": True,
         "contracts": [],
     }
-    for index, location in enumerate(locations, 1):
-        print(
-            f"[{index}/{len(locations)}] {location.chain_id}:{location.address}",
-            file=sys.stderr,
-        )
-        item = {"chain": location.chain_id, "address": location.address}
-        try:
-            observation = provider.fetch(location, set(ArtifactKind))
-        except ProviderError as exc:
-            report["failed"] += 1
-            item.update({
-                "status": "failed",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            })
+    with _event_sink(event_log, report["run_id"], len(locations)) as emit:
+        for index, location in enumerate(locations, 1):
+            print(
+                f"[{index}/{len(locations)}] {location.chain_id}:{location.address}",
+                file=sys.stderr,
+            )
+            item = {"chain": location.chain_id, "address": location.address}
+            try:
+                observation = provider.fetch(location, set(ArtifactKind))
+            except ProviderError as exc:
+                report["failed"] += 1
+                item.update({
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                })
+                report["contracts"].append(item)
+                emit(index, item)
+                if isinstance(exc, ProviderQuotaError):
+                    report["complete"] = False
+                    report["stop_reason"] = "provider_quota"
+                    break
+                continue
+            else:
+                status = ("found" if any(
+                    outcome.status is OutcomeStatus.FOUND
+                    for outcome in observation.outcomes.values()) else "not_found")
+                report[status] += 1
+                item.update({
+                    "status": status,
+                    "cached": observation.cached,
+                    "outcomes": {
+                        kind.value: {"status": outcome.status.value,
+                                     "cached": outcome.cached}
+                        for kind, outcome in observation.outcomes.items()
+                    },
+                })
             report["contracts"].append(item)
-            if isinstance(exc, ProviderQuotaError):
-                report["complete"] = False
-                report["stop_reason"] = "provider_quota"
-                break
-            continue
-        else:
-            status = ("found" if any(
-                outcome.status is OutcomeStatus.FOUND
-                for outcome in observation.outcomes.values()) else "not_found")
-            report[status] += 1
-            item.update({
-                "status": status,
-                "cached": observation.cached,
-                "outcomes": {
-                    kind.value: {"status": outcome.status.value,
-                                 "cached": outcome.cached}
-                    for kind, outcome in observation.outcomes.items()
-                },
-            })
-        report["contracts"].append(item)
+            emit(index, item)
     return report
 
 
@@ -88,6 +121,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="HTTP timeout in seconds (default: 30)")
     parser.add_argument("--report", type=Path,
                         help="write the JSON report to this file instead of stdout")
+    parser.add_argument("--events", type=Path,
+                        help="append one flushed JSONL event per processed contract")
     args = parser.parse_args(argv)
     try:
         report = fill_cache(
@@ -96,6 +131,7 @@ def main(argv: list[str] | None = None) -> None:
             api_key=args.api_key,
             calls_per_second=args.calls_per_second,
             timeout=args.timeout,
+            event_log=args.events,
         )
         rendered = json.dumps(report, indent=2) + "\n"
         if args.report is None:

@@ -9,7 +9,7 @@ from .models import (ArtifactBundle, ArtifactCollection, ArtifactKind,
                      FailureOrigin, OutcomeStatus, ProviderFailure,
                      ProviderObservation, SourceBundle)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "ArtifactBundle", "ArtifactCollection", "ArtifactCollector", "ArtifactError",
