@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import re
-from typing import Any, Mapping, TypeAlias
+from typing import Mapping, TypeAlias
 
 from .errors import InvalidArtifactError
 
@@ -17,9 +17,31 @@ class ArtifactKind(str, Enum):
     RUNTIME = "runtime"
 
 
-class ObservationStatus(str, Enum):
+class OutcomeStatus(str, Enum):
     FOUND = "found"
-    NOT_FOUND = "not_found"
+    ABSENT = "absent"
+
+
+class FailureCategory(str, Enum):
+    CREDENTIALS_MISSING = "credentials_missing"
+    DNS = "dns"
+    TLS = "tls"
+    TIMEOUT = "timeout"
+    CONNECTION = "connection"
+    HTTP = "http"
+    RATE_LIMIT = "rate_limit"
+    QUOTA = "quota"
+    INVALID_JSON = "invalid_json"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+    CACHE_CORRUPTION = "cache_corruption"
+    REQUEST_SCHEDULING = "request_scheduling"
+    UNKNOWN_OPERATIONAL = "unknown_operational"
+
+
+class FailureOrigin(str, Enum):
+    CACHE = "cache"
+    REQUEST = "request"
+    CONFIGURATION = "configuration"
 
 
 @dataclass(frozen=True)
@@ -55,11 +77,15 @@ class SourceBundle:
 
 @dataclass(frozen=True)
 class ArtifactBundle:
+    """Computed view of artifacts found by one provider."""
+
     source: SourceBundle | None = None
     creation_code: bytes | None = None
     runtime_code: bytes | None = None
 
     def __post_init__(self) -> None:
+        if self.source is not None and not isinstance(self.source, SourceBundle):
+            raise InvalidArtifactError("source must be a SourceBundle")
         for name in ("creation_code", "runtime_code"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, bytes) or not value):
@@ -70,33 +96,119 @@ class ArtifactBundle:
 
 
 @dataclass(frozen=True)
-class ProviderObservation:
-    provider: str
-    location: ContractLocation
-    status: ObservationStatus
-    artifacts: ArtifactBundle = field(default_factory=ArtifactBundle)
-    provenance: Mapping[str, JSONValue] = field(default_factory=dict)
+class ArtifactOutcome:
+    status: OutcomeStatus
+    value: SourceBundle | bytes | None = None
     cached: bool = False
 
     def __post_init__(self) -> None:
-        if not self.provider:
-            raise InvalidArtifactError("provider name must be nonempty")
-        if self.status is ObservationStatus.NOT_FOUND and not self.artifacts.empty():
-            raise InvalidArtifactError("not_found observation cannot contain artifacts")
+        if not isinstance(self.cached, bool):
+            raise InvalidArtifactError("outcome cached flag must be boolean")
+        if self.status is OutcomeStatus.FOUND and self.value is None:
+            raise InvalidArtifactError("found outcome needs an artifact value")
+        if self.status is OutcomeStatus.ABSENT and self.value is not None:
+            raise InvalidArtifactError("absent outcome cannot contain an artifact value")
 
 
 @dataclass(frozen=True)
-class ReconciliationReport:
-    contributors: Mapping[str, tuple[str, ...]]
-    source_relation: str | None = None
-    selected_source_provider: str | None = None
-
-
-@dataclass(frozen=True)
-class RetrievalResult:
+class ProviderObservation:
+    provider: str
     location: ContractLocation
-    artifacts: ArtifactBundle
-    observations: tuple[ProviderObservation, ...]
-    reconciliation: ReconciliationReport
-    errors: Mapping[str, str] = field(default_factory=dict)
+    outcomes: Mapping[ArtifactKind, ArtifactOutcome]
+    provenance: Mapping[str, JSONValue] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider, str) or not self.provider:
+            raise InvalidArtifactError("provider name must be nonempty")
+        if not self.outcomes:
+            raise InvalidArtifactError("provider observation needs outcomes")
+        for kind, outcome in self.outcomes.items():
+            if not isinstance(kind, ArtifactKind) or not isinstance(outcome, ArtifactOutcome):
+                raise InvalidArtifactError("outcomes must map ArtifactKind to ArtifactOutcome")
+            value = outcome.value
+            if value is not None and kind is ArtifactKind.SOURCE and not isinstance(value, SourceBundle):
+                raise InvalidArtifactError("source outcome needs a SourceBundle")
+            if value is not None and kind is not ArtifactKind.SOURCE and (
+                    not isinstance(value, bytes) or not value):
+                raise InvalidArtifactError(f"{kind.value} outcome needs nonempty bytes")
+
+    @property
+    def artifacts(self) -> ArtifactBundle:
+        def value(kind: ArtifactKind):
+            outcome = self.outcomes.get(kind)
+            return outcome.value if outcome is not None else None
+        return ArtifactBundle(value(ArtifactKind.SOURCE), value(ArtifactKind.CREATION),
+                              value(ArtifactKind.RUNTIME))
+
+    @property
+    def cached(self) -> bool:
+        return bool(self.outcomes) and all(outcome.cached for outcome in self.outcomes.values())
+
+
+@dataclass(frozen=True)
+class ProviderFailure:
+    provider: str
+    category: FailureCategory
+    detail: str
+    retryable: bool
+    origin: FailureOrigin
+    failed_kind: ArtifactKind | None = None
+    completed_kinds: tuple[ArtifactKind, ...] = ()
+    http_status: int | None = None
+    details: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.provider or not self.detail:
+            raise InvalidArtifactError("provider failure needs provider and detail")
+        if self.http_status is not None and (
+                isinstance(self.http_status, bool) or not isinstance(self.http_status, int)):
+            raise InvalidArtifactError("HTTP status must be an integer")
+
+    def as_dict(self) -> dict[str, JSONValue]:
+        result: dict[str, JSONValue] = {
+            "provider": self.provider, "category": self.category.value,
+            "detail": self.detail, "retryable": self.retryable,
+            "origin": self.origin.value,
+            "completed_kinds": [kind.value for kind in self.completed_kinds],
+        }
+        if self.failed_kind is not None:
+            result["failed_kind"] = self.failed_kind.value
+        if self.http_status is not None:
+            result["http_status"] = self.http_status
+        if self.details:
+            result["details"] = dict(self.details)
+        return result
+
+
+@dataclass(frozen=True)
+class ArtifactCollection:
+    location: ContractLocation
+    requested_kinds: frozenset[ArtifactKind]
+    observations: tuple[ProviderObservation, ...]
+    failures: Mapping[str, ProviderFailure] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.requested_kinds:
+            raise InvalidArtifactError("collection needs requested kinds")
+        if not self.requested_kinds <= frozenset(ArtifactKind):
+            raise InvalidArtifactError("requested kinds must be ArtifactKind values")
+        if len(self.observations) + len(self.failures) > 2:
+            raise InvalidArtifactError("collection supports at most two providers")
+        names = [observation.provider for observation in self.observations]
+        if len(names) != len(set(names)):
+            raise InvalidArtifactError("collection contains duplicate provider observations")
+        if set(names) & set(self.failures):
+            raise InvalidArtifactError("provider cannot have both an observation and failure")
+        for observation in self.observations:
+            if observation.location != self.location:
+                raise InvalidArtifactError("provider observation location mismatch")
+            if set(observation.outcomes) != self.requested_kinds:
+                raise InvalidArtifactError(
+                    "provider outcomes must exactly match requested artifact kinds")
+        for name, failure in self.failures.items():
+            if name != failure.provider:
+                raise InvalidArtifactError("provider failure key mismatch")
+            if failure.failed_kind is not None and failure.failed_kind not in self.requested_kinds:
+                raise InvalidArtifactError("failure refers to an unrequested artifact kind")
+            if not set(failure.completed_kinds) <= self.requested_kinds:
+                raise InvalidArtifactError("failure completed unrequested artifact kinds")

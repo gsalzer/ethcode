@@ -1,37 +1,17 @@
 # Provider interface
 
-Providers implement the structural `ArtifactProvider` protocol:
+Providers implement:
 
 ```python
 class ArtifactProvider(Protocol):
     name: str
-
-    def fetch(
-        self,
-        location: ContractLocation,
-        kinds: Collection[ArtifactKind],
-    ) -> ProviderObservation: ...
+    def fetch(location, kinds) -> ProviderObservation: ...
 ```
 
-`name` identifies the provider in observations, reconciliation reports, and
-errors. Names in one `ArtifactRetriever` must be unique.
+A provider returns every requested kind as a found or absent outcome. An
+exceptional endpoint failure raises `ProviderError` and returns no partial
+observation. The collector retains expected provider/cache failures and
+continues with the other configured provider.
 
-`fetch` returns artifacts for the requested location and kinds. The observation
-contains:
-
-- provider identity;
-- contract location;
-- `FOUND` or `NOT_FOUND` status;
-- normalized artifacts;
-- provider-specific provenance;
-- whether every contributing response came from cache.
-
-Provider implementations raise subclasses of `ProviderError` for configuration,
-transport, response, cache, rate-limit, and quota failures. The retriever records
-these failures and continues with other providers.
-
-The included implementations are:
-
-- [`EtherscanProvider`](etherscan_provider.md)
-- [`SourcifyProvider`](sourcify_provider.md)
-
+Included providers are [`EtherscanProvider`](etherscan_provider.md) and
+[`SourcifyProvider`](sourcify_provider.md).

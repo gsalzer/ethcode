@@ -1,12 +1,15 @@
-# Artifact and result models
+# Public models
 
-The public models are frozen dataclasses. Bytecode values use `bytes`, source
-files map compiler input paths to text, and provenance values are JSON-compatible.
+The frozen public models describe unreconciled provider data:
 
-- [`ContractLocation`](contract_location.md) identifies a deployed contract.
-- [`ArtifactKind`](artifact_kind.md) selects requested artifacts.
-- [`SourceBundle`](source_bundle.md) holds compiler source input.
-- [`ArtifactBundle`](artifact_bundle.md) holds normalized source and bytecode.
-- [`ProviderObservation`](provider_observation.md) records one provider result.
-- [`RetrievalResult`](retrieval_result.md) combines provider observations.
+- [`ContractLocation`](contract_location.md)
+- [`ArtifactKind`](artifact_kind.md)
+- [`SourceBundle`](source_bundle.md)
+- [`ArtifactOutcome`](artifact_outcome.md)
+- [`ProviderObservation`](provider_observation.md)
+- [`ProviderFailure`](provider_failure.md)
+- [`ArtifactCollection`](artifact_collection.md)
+- [`ComparisonAnalysis`](comparison.md)
 
+Bytecode values are decoded `bytes`; provenance and details are
+JSON-compatible.

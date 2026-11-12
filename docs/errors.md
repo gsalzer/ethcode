@@ -1,48 +1,11 @@
 # Errors
 
-All package exceptions derive from `ArtifactError`.
+`InvalidArtifactError` reports invalid caller input or invalid model values.
+`ProviderError` carries structured provider failure context. Specialized
+`ProviderRateLimitError` and `ProviderQuotaError` retain limit classification.
+`CacheError` reports unreadable or malformed cache entries.
 
-```text
-ArtifactError
-├── InvalidArtifactError (also ValueError)
-├── ProviderError
-│   └── ProviderUnavailableError
-│       └── ProviderLimitError
-│           ├── ProviderRateLimitError
-│           └── ProviderQuotaError
-├── ArtifactConflictError (also ValueError)
-└── CacheError
-```
-
-## Input and artifact errors
-
-`InvalidArtifactError` reports malformed addresses, chain IDs, source bundles,
-and bytecode values.
-
-## Provider errors
-
-`ProviderUnavailableError` covers credentials, transport, response decoding,
-response validation, request scheduling, and retry exhaustion.
-
-`ProviderRateLimitError` reports a short-window request limit. `ProviderQuotaError`
-reports a daily, community, monthly, or similar quota. Both expose:
-
-```python
-error.provider
-error.kind
-error.detail
-```
-
-`ArtifactRetriever` records `ProviderError` messages in `RetrievalResult.errors`
-and continues with the remaining providers. Direct provider calls raise them to
-the caller.
-
-## Reconciliation errors
-
-`ArtifactConflictError` reports disagreement between providers on creation code,
-runtime code, or source content.
-
-## Cache errors
-
-`CacheError` reports invalid cache format and cache I/O failures.
-
+`ArtifactCollector` converts documented provider and cache errors into frozen
+`ProviderFailure` models. Programming errors and violated provider invariants
+propagate. Comparison reports provider disagreement as data rather than raising
+a reconciliation exception.

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
-from ethcode import (ArtifactBundle, ContractLocation, ObservationStatus,
-                     ProviderObservation)
+from ethcode import (ArtifactKind, ArtifactOutcome, ContractLocation,
+                     OutcomeStatus, ProviderObservation)
 from ethcode.errors import ProviderRateLimitError
 from ethcode.tools.fill_etherscan_cache import fill_cache
 
@@ -16,11 +16,8 @@ def test_fill_cache_reports_results_and_continues_after_errors(tmp_path):
         return ProviderObservation(
             "etherscan",
             location,
-            ObservationStatus.FOUND,
-            ArtifactBundle(runtime_code=b"\x00"),
-            {"endpoints": {"runtime": {
-                "cached": True, "classification": "found"}}},
-            True,
+            {ArtifactKind.RUNTIME: ArtifactOutcome(
+                OutcomeStatus.FOUND, b"\x00", cached=True)},
         )
 
     with patch("ethcode.tools.fill_etherscan_cache.EtherscanProvider") as factory:

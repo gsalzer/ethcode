@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import ssl
 import tempfile
 import threading
 import time
@@ -19,9 +20,10 @@ from urllib.parse import quote
 from ..cache import DEFAULT_CACHE_ROOT
 from ..codec import decode_hex
 from ..errors import InvalidArtifactError, ProviderUnavailableError
-from ..models import (ArtifactBundle, ContractLocation, ObservationStatus,
-                      ProviderObservation, SourceBundle)
-from .base import CachedHttpProvider
+from ..models import (ArtifactBundle, ArtifactKind, ArtifactOutcome,
+                      ContractLocation, OutcomeStatus, ProviderObservation,
+                      SourceBundle)
+from .base import CachedHttpProvider, transport_error
 
 
 class SourcifyProvider(CachedHttpProvider):
@@ -42,8 +44,10 @@ class SourcifyProvider(CachedHttpProvider):
                  timeout: float = 30, interval: float = 1.0,
                  retries: int = 3, backoff: float = 2.0,
                  max_wait: float = 60.0,
-                 project_url: str = "https://github.com/gsalzer/ethcode") -> None:
-        super().__init__(cache_dir, timeout=timeout)
+                 project_url: str = "https://github.com/gsalzer/ethcode",
+                 ssl_context: ssl.SSLContext | None = None,
+                 ca_file: str | os.PathLike | None = None) -> None:
+        super().__init__(cache_dir, timeout=timeout, ssl_context=ssl_context, ca_file=ca_file)
         self.email = os.environ.get("SOURCIFY_EMAIL", "") if email is None else email
         if not isinstance(self.email, str) or (self.email and not re.fullmatch(
                 r"[^\s@()<>\x00-\x1f\x7f]+@[^\s@()<>\x00-\x1f\x7f]+", self.email)):
@@ -66,8 +70,8 @@ class SourcifyProvider(CachedHttpProvider):
         self.backoff = float(backoff)
         self.max_wait = float(max_wait)
         self.project_url = project_url.strip()
-        self.user_agent = (f"ethcode/0.1 (+{self.project_url}; {self.email})"
-                           if self.email else f"ethcode/0.1 (+{self.project_url})")
+        self.user_agent = (f"ethcode/0.2 (+{self.project_url}; {self.email})"
+                           if self.email else f"ethcode/0.2 (+{self.project_url})")
 
     @property
     def _cooldown_path(self) -> Path:
@@ -93,13 +97,16 @@ class SourcifyProvider(CachedHttpProvider):
     def _request_lock(self):
         """Coordinate the request schedule for every process using this cache."""
         with self._process_lock:
-            self.cache.root.mkdir(parents=True, exist_ok=True)
             try:
+                self.cache.root.mkdir(parents=True, exist_ok=True)
                 with (self.cache.root / ".request.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX)
                     yield
             except (OSError, UnicodeError, ValueError) as exc:
-                raise ProviderUnavailableError(f"Sourcify request locking failure: {exc}") from exc
+                raise ProviderUnavailableError(
+                    f"Sourcify request locking failure: {exc}", provider=self.name,
+                    category="request_scheduling", retryable=True, origin="cache",
+                    details={"component": "request_lock"}) from exc
 
     def _wait_for_cooldown(self) -> None:
         path = self._cooldown_path
@@ -108,15 +115,30 @@ class SourcifyProvider(CachedHttpProvider):
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
             retry_at = state.get("retry_at") if isinstance(state, dict) else None
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ProviderUnavailableError(f"invalid Sourcify cooldown: {exc}") from exc
+        except OSError as exc:
+            raise ProviderUnavailableError(
+                f"cannot read Sourcify cooldown: {exc}", provider=self.name,
+                category="request_scheduling", retryable=True, origin="cache",
+                details={"component": "cooldown", "condition": "unreadable"}) from exc
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ProviderUnavailableError(
+                f"invalid Sourcify cooldown: {exc}", provider=self.name,
+                category="request_scheduling", retryable=False, origin="cache",
+                details={"component": "cooldown", "condition": "corrupt"}) from exc
         if (isinstance(retry_at, bool) or not isinstance(retry_at, (int, float))
                 or not math.isfinite(retry_at)):
-            raise ProviderUnavailableError("invalid Sourcify cooldown timestamp")
+            raise ProviderUnavailableError(
+                "invalid Sourcify cooldown timestamp", provider=self.name,
+                category="request_scheduling", retryable=False, origin="cache",
+                details={"component": "cooldown", "condition": "invalid_timestamp"})
         delay = max(0.0, retry_at - time.time())
         if delay > self.max_wait:
             raise ProviderUnavailableError(
-                f"Sourcify retry delay {delay:.1f}s exceeds max_wait={self.max_wait:g}s")
+                f"Sourcify retry delay {delay:.1f}s exceeds max_wait={self.max_wait:g}s",
+                provider=self.name, category="request_scheduling", retryable=True,
+                origin="cache", details={
+                    "component": "cooldown", "condition": "wait_exceeds_maximum",
+                    "retry_at": retry_at, "max_wait": self.max_wait})
         if delay:
             time.sleep(delay)
 
@@ -139,17 +161,22 @@ class SourcifyProvider(CachedHttpProvider):
         request = urllib.request.Request(url, headers={
             "User-Agent": self.user_agent, "Accept": "application/json"})
         for attempt in range(self.retries + 1):
+            failure_error = None
+            status = None
             delay = max(self.interval, self.backoff * (2 ** attempt))
             with self._request_lock():
                 self._wait_for_cooldown()
                 try:
-                    with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    with urllib.request.urlopen(
+                            request, timeout=self.timeout,
+                            context=self.ssl_context) as response:
                         status, headers, payload = getattr(response, "status", 200), response.headers, response.read()
                 except urllib.error.HTTPError as exc:
                     status, headers, payload = exc.code, exc.headers, exc.read()
                 except (OSError, urllib.error.URLError) as exc:
                     self._set_cooldown(delay)
-                    failure = f"Sourcify transport failure: {type(exc).__name__}"
+                    failure_error = transport_error(self.name, exc)
+                    failure = failure_error.detail
                 else:
                     if status in (429,) or 500 <= status <= 599:
                         delay = max(delay, self._retry_after(headers.get("Retry-After")))
@@ -160,9 +187,21 @@ class SourcifyProvider(CachedHttpProvider):
                         try:
                             return status, json.loads(payload.decode("utf-8"))
                         except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-                            raise ProviderUnavailableError("Sourcify returned invalid JSON") from exc
+                            raise ProviderUnavailableError(
+                                "Sourcify returned invalid JSON", provider=self.name,
+                                category="invalid_json", retryable=True,
+                                origin="request") from exc
             if attempt == self.retries:
-                raise ProviderUnavailableError(f"{failure}; retries exhausted")
+                if failure_error is not None:
+                    raise ProviderUnavailableError(
+                        f"{failure}; retries exhausted", provider=self.name,
+                        category=failure_error.category, retryable=True,
+                        origin="request")
+                raise ProviderUnavailableError(
+                    f"{failure}; retries exhausted", provider=self.name,
+                    category="rate_limit" if "429" in failure else "http",
+                    retryable=True, origin="request",
+                    http_status=status)
         raise AssertionError("unreachable")
 
     @staticmethod
@@ -209,7 +248,9 @@ class SourcifyProvider(CachedHttpProvider):
         try:
             self._bundle(response, location)
         except InvalidArtifactError as exc:
-            raise ProviderUnavailableError(str(exc)) from exc
+            raise ProviderUnavailableError(
+                str(exc), provider=self.name, category="invalid_provider_response",
+                retryable=False, origin="configuration") from exc
         context = dict(provenance or {"backend": "import"})
         with self._request_lock():
             if self.cache.read("contract", location.chain_id, location.address) is not None:
@@ -228,7 +269,9 @@ class SourcifyProvider(CachedHttpProvider):
             return False
         if (cached.get("http_status") not in (200, 404)
                 or not isinstance(cached.get("response"), dict)):
-            raise ProviderUnavailableError("invalid cached Sourcify response")
+            raise ProviderUnavailableError(
+                "invalid cached Sourcify response", provider=self.name,
+                category="cache_corruption", retryable=False, origin="cache")
         return True
 
     def fetch(self, location: ContractLocation, kinds) -> ProviderObservation:
@@ -238,16 +281,25 @@ class SourcifyProvider(CachedHttpProvider):
             try:
                 status, record = cached_record["http_status"], cached_record["response"]
             except (KeyError, TypeError) as exc:
-                raise ProviderUnavailableError(f"invalid cached Sourcify response: {exc}") from exc
+                raise ProviderUnavailableError(
+                    f"invalid cached Sourcify response: {exc}", provider=self.name,
+                    category="cache_corruption", retryable=False,
+                    origin="cache") from exc
             if status not in (200, 404) or not isinstance(record, dict):
-                raise ProviderUnavailableError("invalid cached Sourcify response")
+                raise ProviderUnavailableError(
+                    "invalid cached Sourcify response", provider=self.name,
+                    category="cache_corruption", retryable=False, origin="cache")
             provenance = cached_record.get("provenance", {"backend": "api-v2"})
             if not isinstance(provenance, dict):
-                raise ProviderUnavailableError("invalid cached Sourcify provenance")
+                raise ProviderUnavailableError(
+                    "invalid cached Sourcify provenance", provider=self.name,
+                    category="cache_corruption", retryable=False, origin="cache")
         else:
             if not self.email:
                 raise ProviderUnavailableError(
-                    "provide email= or set SOURCIFY_EMAIL for Sourcify requests")
+                    "provide email= or set SOURCIFY_EMAIL for Sourcify requests",
+                    provider=self.name, category="credentials_missing",
+                    retryable=False, origin="configuration")
             url = (f"{self.api_url}/{location.chain_id}/{quote(location.address)}"
                    f"?fields={quote(self.fields)}")
             status, record = self._request(url)
@@ -260,19 +312,40 @@ class SourcifyProvider(CachedHttpProvider):
                                 and str(record.get("address", "")).casefold() == location.address
                                 and record.get("match") is None)
             if not error_absence and not contract_absence:
-                raise ProviderUnavailableError("Sourcify returned an invalid 404 response")
+                raise ProviderUnavailableError(
+                    "Sourcify returned an invalid 404 response", provider=self.name,
+                    category="invalid_provider_response", retryable=True,
+                    origin="request")
             absence = record.get("customCode", "not_verified")
             bundle = ArtifactBundle()
-            observation_status = ObservationStatus.NOT_FOUND
+            outcomes = {kind: ArtifactOutcome(OutcomeStatus.ABSENT, cached=from_cache)
+                        for kind in kinds}
         elif status == 200 and isinstance(record, dict):
             try:
                 bundle = self._bundle(record, location)
             except InvalidArtifactError as exc:
-                raise ProviderUnavailableError(str(exc)) from exc
+                raise ProviderUnavailableError(
+                    str(exc), provider=self.name,
+                    category=("cache_corruption" if from_cache
+                              else "invalid_provider_response"),
+                    retryable=not from_cache,
+                    origin="cache" if from_cache else "request") from exc
             absence = None
-            observation_status = ObservationStatus.FOUND
+            values = {
+                ArtifactKind.SOURCE: bundle.source,
+                ArtifactKind.CREATION: bundle.creation_code,
+                ArtifactKind.RUNTIME: bundle.runtime_code,
+            }
+            outcomes = {
+                kind: ArtifactOutcome(
+                    OutcomeStatus.FOUND if values[kind] is not None else OutcomeStatus.ABSENT,
+                    values[kind], from_cache)
+                for kind in kinds
+            }
         else:
-            raise ProviderUnavailableError(f"Sourcify HTTP {status}")
+            raise ProviderUnavailableError(
+                f"Sourcify HTTP {status}", provider=self.name, category="http",
+                retryable=status >= 500, origin="request", http_status=status)
         if not from_cache:
             self.cache.write("contract", location.chain_id, location.address, {
                 "http_status": status,
@@ -280,9 +353,17 @@ class SourcifyProvider(CachedHttpProvider):
                 "provenance": provenance,
             })
         provenance = dict(provenance)
+        provenance.update({
+            "match": record.get("match") if isinstance(record, dict) else None,
+            "creationMatch": record.get("creationMatch") if isinstance(record, dict) else None,
+            "runtimeMatch": record.get("runtimeMatch") if isinstance(record, dict) else None,
+        })
+        compilation = record.get("compilation") if isinstance(record, dict) else None
+        if isinstance(compilation, dict) and isinstance(compilation.get("compilerVersion"), str):
+            provenance["compilerVersion"] = compilation["compilerVersion"]
+        provenance["cached"] = from_cache
         if absence is not None:
             provenance["absence"] = absence
         return ProviderObservation(
-            self.name, location, observation_status,
-            self._select(bundle, kinds), provenance, from_cache)
+            self.name, location, outcomes, provenance)
 

@@ -1,77 +1,20 @@
-# `EtherscanProvider`: Retrieve artifacts from Etherscan
+# `EtherscanProvider`
 
-```python
-EtherscanProvider(
-    cache_dir: Path = Path.home() / ".cache" / "ethcode" / "etherscan",
-    api_key: str | None = None,
-    *,
-    calls_per_second: float = 3.0,
-    timeout: float = 30,
-)
-```
+Etherscan API V2 supplies source, creation bytecode, and current runtime
+bytecode through independent endpoint calls and cache entries. The provider
+reads `ETHERSCAN_API_KEY`, defaults to three calls per second, and coordinates
+request spacing across processes using the same cache directory.
 
-The provider uses Etherscan API V2 to retrieve:
+The constructor accepts `cache_dir`, `api_key`, `calls_per_second`, `timeout`,
+`ssl_context`, and `ca_file`. An explicit SSL context and CA file are mutually
+exclusive; `SSL_CERT_FILE` is respected by default.
 
-| Artifact | API action |
-|---|---|
-| Source | `contract/getsourcecode` |
-| Creation code | `contract/getcontractcreation` |
-| Runtime code | `proxy/eth_getCode` |
+Plain source records conservatively preserve optimizer status and runs, EVM
+version, compiler metadata, contract name, and source filename. Recognized
+unverified or empty values become absent outcomes. Successful and authoritative
+absence envelopes are cached; operational and malformed responses are not.
 
-Only requested artifact kinds produce calls. Each endpoint response has an
-independent cache entry, so a successful response remains reusable when another
-endpoint fails.
-
-## Credentials
-
-Pass `api_key` or set `ETHERSCAN_API_KEY`:
-
-```python
-provider = EtherscanProvider(
-    api_key="...",
-)
-```
-
-Cached entries can be decoded without an API key.
-
-The default cache directory is `~/.cache/ethcode/etherscan`. Pass `cache_dir`
-to select another location.
-
-## Request rate
-
-`calls_per_second` defaults to 3. Calls are evenly spaced and coordinated by a
-file lock and schedule file in the cache directory. Threads and processes using
-that directory share the schedule and must use the same rate setting.
-
-HTTP 429 and Etherscan rate-limit envelopes raise `ProviderRateLimitError`.
-Daily, community, and other quota envelopes raise `ProviderQuotaError`. The
-exception preserves the provider's result text in its `detail` attribute.
-
-## Response classification
-
-Successful source and bytecode values are normalized into `SourceBundle` and
-`bytes`. The provider recognizes these absence forms:
-
-- an empty source record;
-- a source-not-verified API result;
-- creation bytecode equal to `0x`;
-- runtime bytecode equal to `0x`.
-
-Recognized values and absences are cached. Operational and ambiguous responses
-raise `ProviderUnavailableError` and remain retryable.
-
-## Cache layout
-
-```text
-cache-root/
-├── source/<chain-id>/<address>.json
-├── creation/<chain-id>/<address>.json
-├── runtime/<chain-id>/<address>.json
-├── .request.lock
-└── .request-schedule.json
-```
-
-Each artifact entry stores the raw response envelope and its `found` or
-`not_found` classification. Cache reads repeat response normalization and verify
-that the classification remains consistent.
-
+JSON-shaped source accepts both Solidity Standard JSON with a top-level
+`sources` member and direct path-to-source maps. Source-map entries may be text
+or objects containing text in `content`; paths and contents are retained
+exactly.

@@ -10,7 +10,7 @@ from typing import Iterable
 
 from ..cache import DEFAULT_CACHE_ROOT
 from ..errors import ArtifactError, ProviderError
-from ..models import ArtifactKind, ContractLocation, ObservationStatus
+from ..models import ArtifactKind, ContractLocation, OutcomeStatus
 from ..providers import EtherscanProvider
 from .addresses import read_addresses
 
@@ -51,13 +51,18 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
                 "error": str(exc),
             })
         else:
-            status = ("not_found" if observation.status is ObservationStatus.NOT_FOUND
-                      else "found")
+            status = ("found" if any(
+                outcome.status is OutcomeStatus.FOUND
+                for outcome in observation.outcomes.values()) else "not_found")
             report[status] += 1
             item.update({
                 "status": status,
                 "cached": observation.cached,
-                "endpoints": observation.provenance.get("endpoints", {}),
+                "outcomes": {
+                    kind.value: {"status": outcome.status.value,
+                                 "cached": outcome.cached}
+                    for kind, outcome in observation.outcomes.items()
+                },
             })
         report["contracts"].append(item)
     return report

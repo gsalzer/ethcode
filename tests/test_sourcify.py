@@ -62,6 +62,9 @@ def test_email_from_environment_and_selective_fields(tmp_path, monkeypatch):
     assert "sources%2Ccompilation.language" in url
     assert "research@example.org" in request.call_args.args[0].headers["User-agent"]
     assert result.artifacts.runtime_code == b"\x00"
+    assert result.provenance["match"] == "exact_match"
+    assert result.provenance["creationMatch"] == "exact_match"
+    assert result.provenance["compilerVersion"] == "0.8.20"
 
 
 def test_cache_read_does_not_require_email(tmp_path):
