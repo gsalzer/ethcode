@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from ethcode import (ArtifactKind, ArtifactOutcome, ContractLocation,
                      OutcomeStatus, ProviderObservation)
-from ethcode.errors import ProviderRateLimitError
+from ethcode.errors import ProviderQuotaError, ProviderRateLimitError
 from ethcode.tools.fill_etherscan_cache import fill_cache
 
 
@@ -32,3 +32,29 @@ def test_fill_cache_reports_results_and_continues_after_errors(tmp_path):
     assert report["failed"] == 1
     assert report["contracts"][0]["cached"] is True
     assert report["contracts"][1]["error_type"] == "ProviderRateLimitError"
+    assert report["complete"] is True
+
+
+def test_fill_cache_stops_after_quota_error_and_keeps_partial_report(tmp_path):
+    locations = [
+        ContractLocation("0x" + "12" * 20),
+        ContractLocation("0x" + "34" * 20),
+        ContractLocation("0x" + "56" * 20),
+    ]
+
+    with patch("ethcode.tools.fill_etherscan_cache.EtherscanProvider") as factory:
+        factory.return_value.fetch.side_effect = [
+            ProviderObservation("etherscan", locations[0], {
+                ArtifactKind.RUNTIME: ArtifactOutcome(
+                    OutcomeStatus.FOUND, b"\x00", cached=False),
+            }),
+            ProviderQuotaError("Etherscan", "daily limit"),
+        ]
+        report = fill_cache(locations, cache_dir=tmp_path, api_key="key")
+
+    assert report["complete"] is False
+    assert report["stop_reason"] == "provider_quota"
+    assert report["found"] == 1
+    assert report["failed"] == 1
+    assert len(report["contracts"]) == 2
+    assert factory.return_value.fetch.call_count == 2

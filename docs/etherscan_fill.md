@@ -38,9 +38,11 @@ value. The cache-scoped request schedule coordinates their calls.
 The command deduplicates and validates locations, requests every artifact kind,
 and reports `found`, `not_found`, or `failed` for each contract. Cached endpoint
 responses do not generate API calls. Rate-limit, quota, transport, and ambiguous
-API errors are reported and remain uncached; processing continues with the next
-contract. If some endpoint calls completed before another failed, their valid
-responses remain cached and are reused on the next run.
+API errors are reported and remain uncached. Processing continues after ordinary
+operational and rate-limit errors, but stops the current pass after a quota error;
+rerunning later resumes from the endpoint responses already cached. If some
+endpoint calls completed before another failed, their valid responses remain
+cached and are reused on the next run.
 
 ## Python API
 

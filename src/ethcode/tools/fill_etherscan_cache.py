@@ -9,7 +9,7 @@ import sys
 from typing import Iterable
 
 from ..cache import DEFAULT_CACHE_ROOT
-from ..errors import ArtifactError, ProviderError
+from ..errors import ArtifactError, ProviderError, ProviderQuotaError
 from ..models import ArtifactKind, ContractLocation, OutcomeStatus
 from ..providers import EtherscanProvider
 from .addresses import read_addresses
@@ -33,6 +33,7 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
         "found": 0,
         "not_found": 0,
         "failed": 0,
+        "complete": True,
         "contracts": [],
     }
     for index, location in enumerate(locations, 1):
@@ -50,6 +51,12 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             })
+            report["contracts"].append(item)
+            if isinstance(exc, ProviderQuotaError):
+                report["complete"] = False
+                report["stop_reason"] = "provider_quota"
+                break
+            continue
         else:
             status = ("found" if any(
                 outcome.status is OutcomeStatus.FOUND
