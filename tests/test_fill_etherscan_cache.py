@@ -1,5 +1,8 @@
 import json
+import threading
 from unittest.mock import patch
+
+import pytest
 
 from ethcode import (ArtifactKind, ArtifactOutcome, ContractLocation,
                      OutcomeStatus, ProviderObservation)
@@ -88,3 +91,32 @@ def test_event_log_survives_interruption(tmp_path):
     assert len(records) == 1
     assert records[0]["address"] == locations[0].address
     assert records[0]["status"] == "found"
+
+
+def test_multiple_workers_overlap_contract_fetches(tmp_path):
+    locations = [
+        ContractLocation("0x" + "12" * 20),
+        ContractLocation("0x" + "34" * 20),
+    ]
+    rendezvous = threading.Barrier(2)
+
+    def fetch(location, kinds):
+        rendezvous.wait(1)
+        return ProviderObservation("etherscan", location, {
+            ArtifactKind.RUNTIME: ArtifactOutcome(
+                OutcomeStatus.FOUND, b"\x00", cached=False),
+        })
+
+    with patch("ethcode.tools.fill_etherscan_cache.EtherscanProvider") as factory:
+        factory.return_value.fetch.side_effect = fetch
+        report = fill_cache(locations, cache_dir=tmp_path, api_key="key", workers=2)
+
+    assert report["workers"] == 2
+    assert report["found"] == 2
+    assert factory.return_value.fetch.call_count == 2
+
+
+@pytest.mark.parametrize("workers", (0, 33, True, 1.5))
+def test_workers_are_bounded(workers, tmp_path):
+    with pytest.raises(ValueError, match="workers"):
+        fill_cache([], cache_dir=tmp_path, api_key="key", workers=workers)

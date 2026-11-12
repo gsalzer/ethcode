@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -20,6 +21,32 @@ from .addresses import read_addresses
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _fetch(provider: EtherscanProvider, location: ContractLocation) -> tuple[dict, bool]:
+    item = {"chain": location.chain_id, "address": location.address}
+    try:
+        observation = provider.fetch(location, set(ArtifactKind))
+    except ProviderError as exc:
+        item.update({
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        })
+        return item, isinstance(exc, ProviderQuotaError)
+    status = ("found" if any(
+        outcome.status is OutcomeStatus.FOUND
+        for outcome in observation.outcomes.values()) else "not_found")
+    item.update({
+        "status": status,
+        "cached": observation.cached,
+        "outcomes": {
+            kind.value: {"status": outcome.status.value,
+                         "cached": outcome.cached}
+            for kind, outcome in observation.outcomes.items()
+        },
+    })
+    return item, False
 
 
 @contextmanager
@@ -48,8 +75,11 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
                api_key: str | None = None,
                calls_per_second: float = 3.0,
                timeout: float = 30,
-               event_log: Path | None = None) -> dict:
+               event_log: Path | None = None,
+               workers: int = 1) -> dict:
     """Retrieve every artifact kind for each location and return a report."""
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 32:
+        raise ValueError("workers must be an integer from 1 to 32")
     provider = EtherscanProvider(
         cache_dir,
         api_key,
@@ -64,47 +94,43 @@ def fill_cache(addresses: Iterable[ContractLocation], *,
         "not_found": 0,
         "failed": 0,
         "complete": True,
+        "workers": workers,
         "contracts": [],
     }
     with _event_sink(event_log, report["run_id"], len(locations)) as emit:
-        for index, location in enumerate(locations, 1):
+        indexed = iter(enumerate(locations, 1))
+        pending = {}
+        quota_reached = False
+
+        def submit(executor, index, location):
             print(
                 f"[{index}/{len(locations)}] {location.chain_id}:{location.address}",
                 file=sys.stderr,
             )
-            item = {"chain": location.chain_id, "address": location.address}
-            try:
-                observation = provider.fetch(location, set(ArtifactKind))
-            except ProviderError as exc:
-                report["failed"] += 1
-                item.update({
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                })
-                report["contracts"].append(item)
-                emit(index, item)
-                if isinstance(exc, ProviderQuotaError):
-                    report["complete"] = False
-                    report["stop_reason"] = "provider_quota"
+            pending[executor.submit(_fetch, provider, location)] = index
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for index, location in indexed:
+                submit(executor, index, location)
+                if len(pending) == workers:
                     break
-                continue
-            else:
-                status = ("found" if any(
-                    outcome.status is OutcomeStatus.FOUND
-                    for outcome in observation.outcomes.values()) else "not_found")
-                report[status] += 1
-                item.update({
-                    "status": status,
-                    "cached": observation.cached,
-                    "outcomes": {
-                        kind.value: {"status": outcome.status.value,
-                                     "cached": outcome.cached}
-                        for kind, outcome in observation.outcomes.items()
-                    },
-                })
-            report["contracts"].append(item)
-            emit(index, item)
+            while pending:
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    index = pending.pop(future)
+                    item, quota_failure = future.result()
+                    report[item["status"] if item["status"] != "failed" else "failed"] += 1
+                    report["contracts"].append(item)
+                    emit(index, item)
+                    if quota_failure:
+                        quota_reached = True
+                        report["complete"] = False
+                        report["stop_reason"] = "provider_quota"
+                if not quota_reached:
+                    for index, location in indexed:
+                        submit(executor, index, location)
+                        if len(pending) == workers:
+                            break
     return report
 
 
@@ -123,6 +149,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="write the JSON report to this file instead of stdout")
     parser.add_argument("--events", type=Path,
                         help="append one flushed JSONL event per processed contract")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="concurrent contracts to retrieve (default: 1)")
     args = parser.parse_args(argv)
     try:
         report = fill_cache(
@@ -132,6 +160,7 @@ def main(argv: list[str] | None = None) -> None:
             calls_per_second=args.calls_per_second,
             timeout=args.timeout,
             event_log=args.events,
+            workers=args.workers,
         )
         rendered = json.dumps(report, indent=2) + "\n"
         if args.report is None:

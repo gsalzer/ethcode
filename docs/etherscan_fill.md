@@ -32,11 +32,16 @@ Options:
 - `--events PATH` appends one compact JSON event for every processed contract.
   Each line is flushed immediately and survives interruption. Repeated runs
   append new events with a distinct `run_id`.
+- `--workers COUNT` retrieves several contracts concurrently. The default is
+  `1`; use `3` to overlap typical network latency while the shared scheduler
+  continues to cap request starts at `--calls-per-second`.
 
 Processes sharing a cache directory must use the same `--calls-per-second`
 value. The cache-scoped request schedule coordinates their request start times.
 Network latency counts toward the spacing: when a response takes longer than
-the configured interval, the next request may start immediately after it.
+the configured interval, another worker may start immediately after it. Request
+slots are persisted before the scheduling lock is released, so concurrent
+workers and processes still share the configured start-rate limit.
 
 ## Behavior
 

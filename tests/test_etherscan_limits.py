@@ -1,4 +1,5 @@
 import json
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -78,3 +79,31 @@ def test_schedule_waits_until_the_next_allowed_start(tmp_path):
     sleep.assert_called_once_with(pytest.approx(0.2))
     state = json.loads((tmp_path / ".request-schedule.json").read_text())
     assert state == {"next_request": 100.4, "calls_per_second": 5.0}
+
+
+def test_reserved_slot_releases_lock_while_request_is_in_flight(tmp_path):
+    provider = EtherscanProvider(tmp_path, "key", calls_per_second=1000)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first():
+        with provider._request_slot():
+            first_entered.set()
+            assert release_first.wait(1)
+
+    def second():
+        assert first_entered.wait(1)
+        with provider._request_slot():
+            second_entered.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    second_thread.start()
+    try:
+        assert second_entered.wait(.5)
+    finally:
+        release_first.set()
+        first_thread.join(1)
+        second_thread.join(1)

@@ -94,19 +94,20 @@ class EtherscanProvider(CachedHttpProvider):
                         if delay > 0:
                             time.sleep(delay)
                     request_started = time.time()
-                    try:
-                        yield
-                    finally:
-                        self._atomic_json(self._schedule_path, {
-                            "next_request": request_started + self.request_interval,
-                            "calls_per_second": self.calls_per_second,
-                        })
+                    self._atomic_json(self._schedule_path, {
+                        "next_request": request_started + self.request_interval,
+                        "calls_per_second": self.calls_per_second,
+                    })
             except ProviderUnavailableError:
                 raise
             except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
                 raise ProviderUnavailableError(
                     f"Etherscan request scheduling failure: {exc}", provider=self.name,
                     category="request_scheduling", retryable=True, origin="cache") from exc
+        # The slot is reserved durably before releasing the process and file
+        # locks. Network latency can therefore overlap without permitting
+        # request starts faster than the configured shared rate.
+        yield
 
     @staticmethod
     def _limit_error(detail: str):
