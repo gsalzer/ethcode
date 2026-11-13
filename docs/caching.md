@@ -37,8 +37,8 @@ Etherscan uses independent source, creation, and runtime entries:
 A retrieval requests only missing entries for the selected artifact kinds.
 Successful calls completed before a later endpoint failure remain cached.
 
-`.request.lock` and `.request-schedule.json` coordinate an evenly spaced request
-schedule across threads and processes.
+`.request.lock` and `.request-schedule.json` coordinate request spacing across
+threads and processes sharing the cache directory.
 
 ## Sourcify
 

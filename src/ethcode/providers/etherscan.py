@@ -77,12 +77,6 @@ class EtherscanProvider(CachedHttpProvider):
                     now = time.time()
                     if self._schedule_path.exists():
                         state = json.loads(self._schedule_path.read_text(encoding="utf-8"))
-                        configured_rate = state.get("calls_per_second") if isinstance(state, dict) else None
-                        if configured_rate != self.calls_per_second:
-                            raise ProviderUnavailableError(
-                                "Etherscan calls_per_second differs from another user of this cache",
-                                provider=self.name, category="request_scheduling",
-                                retryable=False, origin="configuration")
                         next_request = state.get("next_request") if isinstance(state, dict) else None
                         if (isinstance(next_request, bool)
                                 or not isinstance(next_request, (int, float))
@@ -96,7 +90,6 @@ class EtherscanProvider(CachedHttpProvider):
                     request_started = time.time()
                     self._atomic_json(self._schedule_path, {
                         "next_request": request_started + self.request_interval,
-                        "calls_per_second": self.calls_per_second,
                     })
             except ProviderUnavailableError:
                 raise
@@ -106,7 +99,9 @@ class EtherscanProvider(CachedHttpProvider):
                     category="request_scheduling", retryable=True, origin="cache") from exc
         # The slot is reserved durably before releasing the process and file
         # locks. Network latency can therefore overlap without permitting
-        # request starts faster than the configured shared rate.
+        # request starts faster than the rate of the worker that reserved the
+        # preceding slot. Different users of one cache may choose different
+        # rates; the resulting shared stream falls between those rates.
         yield
 
     @staticmethod

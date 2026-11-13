@@ -5,8 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from ethcode import ArtifactKind, ContractLocation
-from ethcode.errors import (ProviderQuotaError, ProviderRateLimitError,
-                            ProviderUnavailableError)
+from ethcode.errors import ProviderQuotaError, ProviderRateLimitError
 from ethcode.providers import EtherscanProvider
 
 
@@ -43,15 +42,6 @@ def test_http_429_is_rate_limit(tmp_path):
             provider._query(LOCATION, module="proxy", action="eth_getCode")
 
 
-def test_processes_must_use_same_rate_for_shared_cache(tmp_path):
-    path = tmp_path / ".request-schedule.json"
-    path.write_text(json.dumps({"next_request": 0, "calls_per_second": 3}))
-    provider = EtherscanProvider(tmp_path, "key", calls_per_second=10)
-    with pytest.raises(ProviderUnavailableError, match="differs"):
-        with provider._request_slot():
-            pass
-
-
 def test_schedule_spaces_request_starts_not_response_completion(tmp_path):
     provider = EtherscanProvider(tmp_path, "key", calls_per_second=5)
     clock = [100.0, 100.0, 107.0]
@@ -60,14 +50,13 @@ def test_schedule_spaces_request_starts_not_response_completion(tmp_path):
             pass
 
     state = json.loads((tmp_path / ".request-schedule.json").read_text())
-    assert state == {"next_request": 100.2, "calls_per_second": 5.0}
+    assert state == {"next_request": 100.2}
     assert now.call_count == 2
 
 
 def test_schedule_waits_until_the_next_allowed_start(tmp_path):
     (tmp_path / ".request-schedule.json").write_text(json.dumps({
         "next_request": 100.2,
-        "calls_per_second": 5.0,
     }))
     provider = EtherscanProvider(tmp_path, "key", calls_per_second=5)
     with patch("ethcode.providers.etherscan.time.time",
@@ -78,7 +67,23 @@ def test_schedule_waits_until_the_next_allowed_start(tmp_path):
 
     sleep.assert_called_once_with(pytest.approx(0.2))
     state = json.loads((tmp_path / ".request-schedule.json").read_text())
-    assert state == {"next_request": 100.4, "calls_per_second": 5.0}
+    assert state == {"next_request": 100.4}
+
+
+def test_shared_cache_accepts_different_rates(tmp_path):
+    slow = EtherscanProvider(tmp_path, "key", calls_per_second=2)
+    fast = EtherscanProvider(tmp_path, "key", calls_per_second=4)
+    with patch("ethcode.providers.etherscan.time.time",
+               side_effect=[100.0, 100.0, 100.0, 100.5]), patch(
+                   "ethcode.providers.etherscan.time.sleep") as sleep:
+        with slow._request_slot():
+            pass
+        with fast._request_slot():
+            pass
+
+    sleep.assert_called_once_with(pytest.approx(0.5))
+    state = json.loads((tmp_path / ".request-schedule.json").read_text())
+    assert state == {"next_request": 100.75}
 
 
 def test_reserved_slot_releases_lock_while_request_is_in_flight(tmp_path):
