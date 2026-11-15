@@ -12,6 +12,7 @@ from .models import (ArtifactCollection, ArtifactKind, ContractLocation,
 class BytecodeComparison:
     providers: tuple[str, ...]
     relation: str  # equal, different, or unavailable
+    value: bytes | None
 
 
 @dataclass(frozen=True)
@@ -172,13 +173,14 @@ def _bytecode(collection: ArtifactCollection, kind: ArtifactKind) -> BytecodeCom
         if outcome is not None and outcome.status is OutcomeStatus.FOUND:
             supplied.append((observation.provider, outcome.value))
     providers = tuple(name for name, _ in supplied)
-    if len(supplied) < 2:
-        return BytecodeComparison(providers, "unavailable")
-    return BytecodeComparison(
-        providers,
-        "equal" if all(value == supplied[0][1] for _, value in supplied[1:])
-        else "different",
-    )
+    if not supplied:
+        return BytecodeComparison(providers, "unavailable", None)
+    representative = supplied[0][1]
+    if len(supplied) == 1:
+        return BytecodeComparison(providers, "unavailable", representative)
+    if all(value == representative for _, value in supplied[1:]):
+        return BytecodeComparison(providers, "equal", representative)
+    return BytecodeComparison(providers, "different", None)
 
 
 def compare(collection: ArtifactCollection) -> ComparisonAnalysis:

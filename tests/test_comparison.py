@@ -62,6 +62,7 @@ def test_bytecode_difference_is_data_not_exception():
     result = analysis(source("C.sol", "contract C {}"),
                       source("C.sol", "contract C {}"))
     assert result.runtime.relation == "equal"
+    assert result.runtime.value == b"\x00"
 
     collection = ArtifactCollection(
         LOCATION, frozenset({ArtifactKind.RUNTIME}),
@@ -70,7 +71,9 @@ def test_bytecode_difference_is_data_not_exception():
          ProviderObservation("two", LOCATION, {
             ArtifactKind.RUNTIME: ArtifactOutcome(OutcomeStatus.FOUND, b"\x01")})),
     )
-    assert compare(collection).runtime.relation == "different"
+    compared = compare(collection).runtime
+    assert compared.relation == "different"
+    assert compared.value is None
 
 
 def test_bytecode_comparison_uses_all_available_providers():
@@ -86,6 +89,7 @@ def test_bytecode_comparison_uses_all_available_providers():
     )
     assert compare(equal).runtime.relation == "equal"
     assert compare(equal).runtime.providers == ("one", "three", "two")
+    assert compare(equal).runtime.value == b"\x00"
 
     different = ArtifactCollection(
         LOCATION, frozenset({ArtifactKind.RUNTIME}),
@@ -93,6 +97,7 @@ def test_bytecode_comparison_uses_all_available_providers():
          runtime("three", b"\x01")),
     )
     assert compare(different).runtime.relation == "different"
+    assert compare(different).runtime.value is None
 
 
 def test_settings_empty_boolean_and_list_semantics():
@@ -132,10 +137,26 @@ def test_absence_and_provider_failure_make_comparison_unavailable():
     result = compare(collection).runtime
     assert result.relation == "unavailable"
     assert result.providers == ("one",)
+    assert result.value == b"\x00"
 
     failure = ProviderFailure(
         "two", FailureCategory.TIMEOUT, "timeout", True, FailureOrigin.REQUEST,
         failed_kind=ArtifactKind.RUNTIME)
     collection = ArtifactCollection(
         LOCATION, frozenset({ArtifactKind.RUNTIME}), (found,), {"two": failure})
-    assert compare(collection).runtime.relation == "unavailable"
+    result = compare(collection).runtime
+    assert result.relation == "unavailable"
+    assert result.value == b"\x00"
+
+
+def test_bytecode_comparison_without_a_value_has_no_consensus():
+    absent = ProviderObservation("one", LOCATION, {
+        ArtifactKind.RUNTIME: ArtifactOutcome(OutcomeStatus.ABSENT),
+    })
+    collection = ArtifactCollection(
+        LOCATION, frozenset({ArtifactKind.RUNTIME}), (absent,),
+    )
+    result = compare(collection).runtime
+    assert result.relation == "unavailable"
+    assert result.providers == ()
+    assert result.value is None

@@ -9,7 +9,7 @@ from ethcode import ArtifactCollector, ContractLocation, ArtifactKind, compare
 Providers are exported from `ethcode.providers`:
 
 ```python
-from ethcode.providers import EtherscanProvider, SourcifyProvider
+from ethcode.providers import EtherscanProvider, NodeProvider, SourcifyProvider
 ```
 
 ## Collection
@@ -26,7 +26,7 @@ collect(
 ) -> ArtifactCollection
 ```
 
-The collector accepts one or two uniquely named providers.
+The collector accepts one or more uniquely named providers.
 
 ### [`ArtifactCollection`](docs/artifact_collection.md)
 
@@ -68,8 +68,9 @@ ArtifactKind.RUNTIME
 compare(collection: ArtifactCollection) -> ComparisonAnalysis
 ```
 
-Comparison supports at most two successful provider observations. It is pure,
-returns conflicts as data, and never selects artifacts.
+Comparison is pure and returns conflicts as data. Bytecode comparisons expose a
+consensus value when one value is available or all available values agree, and
+`None` when values differ.
 
 `ComparisonAnalysis` contains an optional `SourceComparison` and optional
 `BytecodeComparison` values for the requested kinds.
@@ -99,7 +100,16 @@ SourcifyProvider(
 )
 ```
 
-Both implement the [`ArtifactProvider`](docs/providers.md) protocol. Cache
+### `NodeProvider`
+
+```python
+NodeProvider(cache_dir)
+```
+
+Reads optional creation and runtime `.hex` files without network access. It
+does not supply source code.
+
+All providers implement the [`ArtifactProvider`](docs/providers.md) protocol. Cache
 semantics are described in [Caching](docs/caching.md), and typed failures in
 [Errors](docs/errors.md).
 
