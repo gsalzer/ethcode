@@ -9,7 +9,8 @@ The default cache parent is `~/.cache/ethcode`:
 ```text
 ~/.cache/ethcode/
 ├── etherscan/
-└── sourcify/
+├── sourcify/
+└── node/
 ```
 
 Each provider accepts `cache_dir` to override its default subdirectory.
@@ -50,6 +51,18 @@ Sourcify uses one contract-response entry:
 
 That response supplies all artifact kinds. `.request.lock` and `.cooldown.json`
 coordinate normal delays, exponential backoff, and `Retry-After` across callers.
+
+## Node bytecode
+
+`NodeProvider` reads externally obtained bytecode from plain hexadecimal files:
+
+```text
+<cache>/creation/<chain-id>/<address>.hex
+<cache>/runtime/<chain-id>/<address>.hex
+```
+
+Each artifact is optional. The provider performs no network access and does not
+write or supply source code.
 
 ## Cacheability
 

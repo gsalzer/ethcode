@@ -10,12 +10,12 @@ from .protocols import ArtifactProvider
 
 
 class ArtifactCollector:
-    """Collect normalized observations from one or two providers."""
+    """Collect normalized observations from one or more providers."""
 
     def __init__(self, providers: Iterable[ArtifactProvider]) -> None:
         self.providers = tuple(providers)
-        if not 1 <= len(self.providers) <= 2:
-            raise ValueError("ArtifactCollector requires one or two providers")
+        if not self.providers:
+            raise ValueError("ArtifactCollector requires at least one provider")
         names = [provider.name for provider in self.providers]
         if len(names) != len(set(names)):
             raise ValueError("provider names must be unique")

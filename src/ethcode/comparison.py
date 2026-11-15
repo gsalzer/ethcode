@@ -172,16 +172,17 @@ def _bytecode(collection: ArtifactCollection, kind: ArtifactKind) -> BytecodeCom
         if outcome is not None and outcome.status is OutcomeStatus.FOUND:
             supplied.append((observation.provider, outcome.value))
     providers = tuple(name for name, _ in supplied)
-    if len(supplied) != 2:
+    if len(supplied) < 2:
         return BytecodeComparison(providers, "unavailable")
     return BytecodeComparison(
-        providers, "equal" if supplied[0][1] == supplied[1][1] else "different")
+        providers,
+        "equal" if all(value == supplied[0][1] for _, value in supplied[1:])
+        else "different",
+    )
 
 
 def compare(collection: ArtifactCollection) -> ComparisonAnalysis:
-    """Describe relations between at most two provider observations."""
-    if len(collection.observations) > 2:
-        raise ValueError("comparison supports at most two provider observations")
+    """Describe relations among available provider observations."""
     return ComparisonAnalysis(
         collection.location,
         collection.requested_kinds,

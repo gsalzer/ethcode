@@ -192,8 +192,6 @@ class ArtifactCollection:
             raise InvalidArtifactError("collection needs requested kinds")
         if not self.requested_kinds <= frozenset(ArtifactKind):
             raise InvalidArtifactError("requested kinds must be ArtifactKind values")
-        if len(self.observations) + len(self.failures) > 2:
-            raise InvalidArtifactError("collection supports at most two providers")
         names = [observation.provider for observation in self.observations]
         if len(names) != len(set(names)):
             raise InvalidArtifactError("collection contains duplicate provider observations")

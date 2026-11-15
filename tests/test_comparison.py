@@ -73,6 +73,28 @@ def test_bytecode_difference_is_data_not_exception():
     assert compare(collection).runtime.relation == "different"
 
 
+def test_bytecode_comparison_uses_all_available_providers():
+    def runtime(name, value):
+        return ProviderObservation(name, LOCATION, {
+            ArtifactKind.RUNTIME: ArtifactOutcome(OutcomeStatus.FOUND, value),
+        })
+
+    equal = ArtifactCollection(
+        LOCATION, frozenset({ArtifactKind.RUNTIME}),
+        (runtime("one", b"\x00"), runtime("two", b"\x00"),
+         runtime("three", b"\x00")),
+    )
+    assert compare(equal).runtime.relation == "equal"
+    assert compare(equal).runtime.providers == ("one", "three", "two")
+
+    different = ArtifactCollection(
+        LOCATION, frozenset({ArtifactKind.RUNTIME}),
+        (runtime("one", b"\x00"), runtime("two", b"\x00"),
+         runtime("three", b"\x01")),
+    )
+    assert compare(different).runtime.relation == "different"
+
+
 def test_settings_empty_boolean_and_list_semantics():
     empty = analysis(source("C.sol", "contract C {}", None),
                      source("C.sol", "contract C {}", {})).source

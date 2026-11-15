@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ethcode"
-version = "0.2.5"
+version = "0.2.6"
 description = "Collect, compare, and cache smart-contract source and bytecode artifacts"
 readme = "README.md"
 requires-python = ">=3.10"

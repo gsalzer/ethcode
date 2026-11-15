@@ -70,13 +70,16 @@ def test_requested_kinds_reach_provider():
     assert collection.requested_kinds == frozenset({ArtifactKind.SOURCE})
 
 
-def test_collector_accepts_at_most_two_providers():
-    try:
-        ArtifactCollector([Provider("a"), Provider("b"), Provider("c")])
-    except ValueError as exc:
-        assert "one or two" in str(exc)
-    else:
-        raise AssertionError("expected provider-count error")
+def test_collector_accepts_multiple_providers():
+    collection = ArtifactCollector([
+        Provider("a"), Provider("b"), Provider("c"),
+    ]).collect(LOCATION)
+    assert [item.provider for item in collection.observations] == ["a", "b", "c"]
+
+
+def test_collector_requires_a_provider():
+    with pytest.raises(ValueError, match="at least one"):
+        ArtifactCollector([])
 
 
 def test_collection_requires_complete_exact_outcomes():

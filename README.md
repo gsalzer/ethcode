@@ -1,7 +1,7 @@
 # ethcode
 
 `ethcode` collects smart-contract source, creation bytecode, and runtime
-bytecode from Etherscan and Sourcify. It caches validated provider responses,
+bytecode from Etherscan, Sourcify, and local node-cache files. It caches validated provider responses,
 retains structured outcomes and failures, and compares representations without
 selecting canonical artifacts.
 
@@ -25,11 +25,12 @@ Python 3.10 or newer is required.
 
 ```python
 from ethcode import ArtifactCollector, ContractLocation, compare
-from ethcode.providers import EtherscanProvider, SourcifyProvider
+from ethcode.providers import EtherscanProvider, NodeProvider, SourcifyProvider
 
 collector = ArtifactCollector([
     EtherscanProvider(),
     SourcifyProvider(),
+    NodeProvider("cache/node"),
 ])
 collection = collector.collect(
     ContractLocation("0xdAC17F958D2ee523a2206206994597C13D831ec7")
@@ -47,8 +48,13 @@ Ethereum mainnet, chain ID 1, is the default. Pass another positive chain ID to
 ## Provider configuration
 
 Etherscan reads `ETHERSCAN_API_KEY` and defaults to three calls per second.
-Sourcify reads `SOURCIFY_EMAIL`. Both providers accept explicit credentials,
+Sourcify reads `SOURCIFY_EMAIL`. The HTTP providers accept explicit credentials,
 cache directories, timeouts, SSL contexts, or CA files.
+
+`NodeProvider` reads optional creation and runtime bytecode from
+`<cache>/creation/<chain>/<address>.hex` and
+`<cache>/runtime/<chain>/<address>.hex`. It performs no network access and
+does not provide source code.
 
 The default cache parent is `~/.cache/ethcode`. Provider caches coordinate
 request timing across processes sharing the same cache directory. Cached
